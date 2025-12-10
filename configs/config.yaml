@@ -1,0 +1,49 @@
+data_root: "data"
+
+task_type: "stage_multiclass"
+class_names: ["I", "II", "III", "IV"]
+
+stage_clinical_weights:
+  I: 1.5
+  II: 1.3
+  III: 1.0
+  IV: 0.8
+dynamic_class_weights: true
+
+patch_size: 256
+stride: 256
+batch_size: 16
+num_workers: 4
+max_patches_per_wsi: 512
+
+val_split: 0.15
+test_split: 0.15
+num_folds: 1
+fold_index: 0
+
+backbone_kimianet_weights: "models/kimianet_tf_weights.h5"  # coloque aqui seu .h5 se tiver
+use_resnet: true
+dropout: 0.3
+
+num_epochs: 20
+learning_rate: 0.0001
+weight_decay: 0.0001          # não usado diretamente pelo Adam, mas já deixado
+early_stopping_patience: 5
+
+experiment_name: "tcga_brca_stage_tf"
+run_name: "kimianet_resnet_stage_ensemble_clickhouse"
+mlflow_tracking_uri: "mlruns"
+output_dir: "experiments/tcga_stage_tf"
+
+seed: 42
+device: "gpu"  # "gpu" ou "cpu"
+
+clickhouse:
+  host: "localhost"
+  port: 8123
+  username: "default"
+  password: ""
+  database: "ml_histopath"
+  table_slides: "tcga_slides"
+  table_patches: "tcga_patches"
+  limit_per_split: null   # se quiser limitar nº total de patches para experimentos rápidos
