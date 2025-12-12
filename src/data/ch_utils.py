@@ -6,7 +6,7 @@ from typing import List, Optional, Dict
 import clickhouse_connect
 import pandas as pd
 
-from src.utils.config import ClickHouseConfig
+from src.utils.config_utils import ClickHouseConfig
 
 
 @dataclass

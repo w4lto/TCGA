@@ -40,7 +40,6 @@ def _load_clinical_table(clinical_path: Path) -> pd.DataFrame:
     Lê o TSV clínico do TCGA e retorna DataFrame com:
       - patient_id
       - stage_label (I/II/III/IV)
-    Ajuste as colunas conforme o arquivo que você baixou.
     """
     df = pd.read_csv(clinical_path, sep="\t", dtype=str)
 
@@ -94,7 +93,6 @@ def _discover_wsi_files(wsi_root: Path) -> pd.DataFrame:
       - slide_id: nome do arquivo sem extensão
       - patient_id: inferido a partir do prefixo (até o primeiro '_', por exemplo)
       - image_path: caminho absoluto
-    Ajuste a lógica de extração do patient_id conforme seu naming real.
     """
     paths: List[Path] = sorted(wsi_root.glob("*.svs"))
     rows: List[Dict[str, str]] = []
@@ -103,7 +101,6 @@ def _discover_wsi_files(wsi_root: Path) -> pd.DataFrame:
         slide_id = p.stem
         # Estratégia comum no TCGA: case_id = primeiros 12 caracteres
         # ex: TCGA-XX-YYYY-01Z-... -> patient_id = TCGA-XX-YYYY
-        # Ajuste se seu naming for diferente.
         patient_id = slide_id[:12]
         rows.append(
             {
@@ -183,7 +180,6 @@ def ingest_tcga_stage_to_clickhouse(cfg: TrainConfig) -> None:
     print(f"Descobrindo arquivos WSI em: {wsi_root}")
     df_wsi = _discover_wsi_files(wsi_root)
 
-    # Join por patient_id (nem sempre 1:1, mas para base inicial está ok)
     df = df_wsi.merge(df_clin, on="patient_id", how="inner")
     print(f"Slides com estágio válido: {len(df)}")
 
@@ -205,11 +201,9 @@ def ingest_tcga_stage_to_clickhouse(cfg: TrainConfig) -> None:
     print("Exemplo de linhas:")
     print(df.head())
 
-    # Grava em ClickHouse
     ch = ClickHouseClient(cfg.clickhouse)
     client = ch.get_client()
 
-    # Limpa tabela (opcional, para base inicial)
     print("Limpando tabela tcga_slides (se existir)...")
     client.command(
         f"""

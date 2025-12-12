@@ -5,11 +5,11 @@ from tensorflow.keras import models
 def build_ensemble_model_tf(
     backbones: list[tf.keras.Model],
     num_classes: int,
-    combine: str = "mean_logits",  # ou "mean_probs"
+    combine: str = "mean_logits", 
 ) -> tf.keras.Model:
     inputs = tf.keras.Input(shape=(None, None, 3))
     logits_list = [m(inputs, training=False) for m in backbones]
-    stacked = tf.stack(logits_list, axis=0)  # [M, B, C]
+    stacked = tf.stack(logits_list, axis=0)
 
     if combine == "mean_logits":
         logits = tf.reduce_mean(stacked, axis=0)

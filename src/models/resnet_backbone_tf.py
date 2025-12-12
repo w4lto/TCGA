@@ -16,5 +16,5 @@ def build_resnet_backbone_tf(
     inputs = tf.keras.Input(shape=(None, None, 3))
     x = base(inputs, training=False)
     x = layers.Dropout(dropout)(x)
-    outputs = layers.Dense(num_classes)(x)  # logits
+    outputs = layers.Dense(num_classes)(x)
     return models.Model(inputs=inputs, outputs=outputs, name="resnet_tf")

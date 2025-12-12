@@ -48,7 +48,6 @@ def main(config_path: str) -> None:
         y_true = df_test["label"].map(lambda x: label_map[x]).to_numpy()
         slide_ids = df_test["slide_id"].to_numpy()
 
-    # ---------- Métricas PATCH-level ----------
     patch_metrics = compute_patch_metrics_multiclass(
         y_true=y_true,
         y_proba=y_proba,
@@ -67,8 +66,7 @@ def main(config_path: str) -> None:
     print("\nClassification report (patch-level):")
     print(cls_report_patch)
 
-    # ---------- Métricas SLIDE-level (soft vs majority) ----------
-    # soft voting / mean_prob
+
     y_true_slide_soft, y_proba_slide_soft = aggregate_by_slide(
         y_true=y_true,
         y_proba=y_proba,

@@ -182,7 +182,6 @@ def main(config_path: str) -> None:
         log_metrics({f"test_{k}": float(v) for k, v in test_metrics.items()})
         logger.info("Métricas básicas test_ds: %s", test_metrics)
 
-        # ---------- Métricas avançadas patch/slide via sklearn ----------
         logger.info("Calculando métricas avançadas patch-level e slide-level...")
 
         dfs = load_splits_from_clickhouse(cfg)

@@ -12,11 +12,10 @@ def build_kimianet_backbone_tf(
 ) -> tf.keras.Model:
     """
     Aproximação de KimiaNet usando DenseNet121 do Keras.
-    Se weights_path for fornecido, espera-se um .h5 compatível.
     """
     base = tf.keras.applications.DenseNet121(
         include_top=False,
-        weights=None,  # ou "imagenet" se quiser inicializar de ImageNet
+        weights=None,
         input_shape=(None, None, 3),
         pooling="avg",
     )
