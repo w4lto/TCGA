@@ -21,13 +21,13 @@ test_split: 0.15
 num_folds: 1
 fold_index: 0
 
-backbone_kimianet_weights: "models/kimianet_tf_weights.h5"  # coloque aqui seu .h5 se tiver
+backbone_kimianet_weights: "models/kimianet_tf_weights.h5"
 use_resnet: true
 dropout: 0.3
 
 num_epochs: 20
 learning_rate: 0.0001
-weight_decay: 0.0001          # não usado diretamente pelo Adam, mas já deixado
+weight_decay: 0.0001
 early_stopping_patience: 5
 
 experiment_name: "tcga_brca_stage_tf"
@@ -38,6 +38,11 @@ output_dir: "experiments/tcga_stage_tf"
 seed: 42
 device: "gpu"  # "gpu" ou "cpu"
 
+# Agregação slide-level:
+# - "mean_prob": média das probabilidades dos patches (soft voting)
+# - "majority_vote": frequência de classes preditas (hard voting)
+slide_aggregation: "mean_prob"
+
 clickhouse:
   host: "localhost"
   port: 8123
@@ -46,4 +51,4 @@ clickhouse:
   database: "ml_histopath"
   table_slides: "tcga_slides"
   table_patches: "tcga_patches"
-  limit_per_split: null   # se quiser limitar nº total de patches para experimentos rápidos
+  limit_per_split: null

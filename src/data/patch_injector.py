@@ -1,9 +1,9 @@
 from pathlib import Path
 import argparse
 
-from src.utils.config import load_config
+from src.utils.config_utils import load_config
 from src.data.ch_utils import ClickHouseClient
-from src.data.patch_extraction import extract_patches_from_wsi
+from src.data.patch_extractor import extract_patches_from_wsi
 
 
 def main(config_path: str):
