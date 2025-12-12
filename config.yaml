@@ -52,3 +52,5 @@ clickhouse:
   table_slides: "tcga_slides"
   table_patches: "tcga_patches"
   limit_per_split: null
+
+tcga_max_slides_per_stage: 20
