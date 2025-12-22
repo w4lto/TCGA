@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Tuple, List
 
 import tensorflow as tf
+from tensorflow.python.client import device_lib
 
-
-def setup_tf_device(preferred: str = "gpu") -> Tuple[str, str]:
+def setup_tf_device() -> Tuple[str, str]:
     """
     Configura o dispositivo do TensorFlow com:
     - memory growth ativado em todas as GPUs visíveis
@@ -17,6 +17,12 @@ def setup_tf_device(preferred: str = "gpu") -> Tuple[str, str]:
         ex: ("/GPU:0", "GPU(s) detectadas: NVIDIA GPU 0, logical_gpus=1")
     """
     # Lista GPUs físicas
+
+    gpu_names = []
+    for d in device_lib.list_local_devices():
+        if d.device_type == 'GPU':
+            gpu_names.append(d.physical_device_desc)
+            
     gpus: List[tf.config.PhysicalDevice] = tf.config.list_physical_devices("GPU")
 
     if gpus:
@@ -24,6 +30,7 @@ def setup_tf_device(preferred: str = "gpu") -> Tuple[str, str]:
         for gpu in gpus:
             try:
                 tf.config.experimental.set_memory_growth(gpu, True)
+                gpu.name
             except Exception:
                 # Se já estiver configurado ou não suportado, ignoramos
                 pass
@@ -31,7 +38,6 @@ def setup_tf_device(preferred: str = "gpu") -> Tuple[str, str]:
         logical_gpus = tf.config.list_logical_devices("GPU")
         device_str = "/GPU:0"
 
-        gpu_names = [getattr(g, "name", "GPU") for g in gpus]
         desc = (
             f"GPU(s) detectadas: {', '.join(gpu_names)}; "
             f"logical_gpus={len(logical_gpus)}; usando {device_str}"

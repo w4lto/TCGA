@@ -21,7 +21,12 @@ test_split: 0.15
 num_folds: 1
 fold_index: 0
 
-backbone_kimianet_weights: "models/kimianet_tf_weights.h5"
+mixed_precision: true
+prefetch: 2
+num_classes: 4
+label_mode: "stage"
+
+backbone_kimianet_weights: "models/KimiaNetKerasWeights.h5"
 use_resnet: true
 dropout: 0.3
 
@@ -44,7 +49,7 @@ device: "gpu"  # "gpu" ou "cpu"
 slide_aggregation: "mean_prob"
 
 clickhouse:
-  host: "localhost"
+  host: "clickhouse"
   port: 8123
   username: "default"
   password: ""

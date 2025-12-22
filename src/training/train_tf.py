@@ -29,6 +29,8 @@ from src.training.metrics_utils import (
     compute_slide_metrics_multiclass,
 )
 
+from pathlib import Path
+import os
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -75,15 +77,17 @@ def main(config_path: str) -> None:
     cfg = load_config(config_path)
     set_seed(cfg.seed)
 
-    log_dir = cfg.output_dir / "logs"
+    log_dir = Path(os.path.join(cfg.output_dir, "logs"))
     logger = setup_logging(log_dir, "train_tf")
 
     # Configura dispositivo TF + memory growth
-    device_str, device_desc = setup_tf_device(preferred=cfg.device)
+    device_str, device_desc = setup_tf_device()
     logger.info(f"TensorFlow device: {device_desc}")
 
     # Inicializa MLflow
-    init_mlflow(cfg.mlflow_tracking_uri, cfg.experiment_name)
+    tracking_uri = Path(cfg.mlflow_tracking_uri)
+    logger.info(f"Using tracking uri: {tracking_uri} | experiment: {cfg.experiment_name}")
+    init_mlflow(tracking_uri, cfg.experiment_name)
     params: Dict[str, Any] = {
         "task_type": cfg.task_type,
         "class_names": ",".join(cfg.class_names),
@@ -94,7 +98,7 @@ def main(config_path: str) -> None:
         "num_epochs": cfg.num_epochs,
         "dropout": cfg.dropout,
         "device": cfg.device,
-        "slide_aggregation": getattr(cfg, "slide_aggregation", "mean_prob"),
+        "slide_aggregation": cfg.slide_aggregation,
     }
     start_run(cfg.run_name, params=params)
 

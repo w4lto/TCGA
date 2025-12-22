@@ -1,91 +1,114 @@
-from dataclasses import dataclass
-from pathlib import Path
-from typing import List, Optional, Dict, Any
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass, field, fields
+from typing import Any, Dict
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ClickHouseConfig:
-    host: str
-    port: int
-    username: str
-    password: str
-    database: str
-    table_slides: str
-    table_patches: str
-    limit_per_split: Optional[int] = None
+    host: str = "clickhouse"
+    port: int = 8123
+    username: str = "default"
+    password: str = ""
+    database: str = "ml_histopath"
+    table_slides: str = "tcga_slides"
+    table_patches: str = "tcga_patches"
 
 
 @dataclass
 class TrainConfig:
-    # Dados
-    data_root: Path
-
-    # Tarefa
-    task_type: str
-    class_names: List[str]
-    positive_classes: Optional[List[str]] = None
-
-    # Pesos clínicos para estágio
-    stage_clinical_weights: Optional[Dict[str, float]] = None
-    dynamic_class_weights: bool = False
-
-    # Patches / DataLoader
-    patch_size: int = 256
-    stride: int = 256
-    batch_size: int = 16
-    num_workers: int = 4
-    max_patches_per_wsi: Optional[int] = None
+    # Reprodutibilidade
+    seed: int = 42
 
     # Splits
     val_split: float = 0.1
     test_split: float = 0.1
-    num_folds: int = 1
-    fold_index: int = 0
 
-    # Modelo
-    backbone_kimianet_weights: Optional[Path] = None
-    use_resnet: bool = True
-    dropout: float = 0.3
+    # Dataset / patches
+    patch_size: int = 256
+    batch_size: int = 8
+    num_workers: int = 4
+    prefetch: int = 2
 
     # Treino
-    num_epochs: int = 50
+    num_epochs: int = 2
     learning_rate: float = 1e-4
-    weight_decay: float = 1e-4
-    early_stopping_patience: int = 10
+    weight_decay: float = 1e-5
+    mixed_precision: bool = True
+    early_stopping_patience: int = 5
+    dynamic_class_weights = True
+    backbone_kimianet_weights:str = "models/KimiaNetKerasWeights.h5"
+    class_names:list[str] = ["I", "II", "III", "IV"]
 
-    # MLOps
-    experiment_name: str = "breast_histopathology_tf"
-    run_name: str = "kimianet_resnet_ensemble_tf"
-    mlflow_tracking_uri: Path = Path("mlruns")
-    output_dir: Path = Path("experiments")
+    # Task
+    num_classes: int = 4  # I/II/III/IV (ou 2 no binário)
+    label_mode: str = "stage"  # "stage" | "binary"
+    task_type: str = "stage_multiclass"
 
-    # Misc
-    seed: int = 42
-    device: str = "gpu"  # "gpu" ou "cpu"
+    # Agregação por slide (PATCH -> SLIDE)
+    # - "mean_prob": média das probabilidades por classe e argmax
+    # - "majority_vote": maioria do argmax por patch (com desempate por mean_prob)
+    slide_aggregation: str = "majority_vote"
+
+    # Paths / outputs
+    output_dir: str = "/app/experiments"
+    mlflow_tracking_uri: str = "file:/app/mlruns"
+    experiment_name: str = "tcga_brca"
 
     # ClickHouse
-    clickhouse: ClickHouseConfig | None = None
+    clickhouse: ClickHouseConfig = field(default_factory=ClickHouseConfig)
 
 
-def load_config(path: str | Path) -> TrainConfig:
-    path = Path(path)
-    with path.open("r") as f:
-        raw: Dict[str, Any] = yaml.safe_load(f)
+def _expand_env(obj: Any) -> Any:
+    if isinstance(obj, str):
+        return os.path.expandvars(obj)
+    if isinstance(obj, list):
+        return [_expand_env(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _expand_env(v) for k, v in obj.items()}
+    return obj
 
-    raw["data_root"] = Path(raw["data_root"])
 
-    ch_raw = raw.pop("clickhouse", None)
-    ch_cfg = None
-    if ch_raw is not None:
-        ch_cfg = ClickHouseConfig(**ch_raw)
-    raw["clickhouse"] = ch_cfg
+def _filter_kwargs(dc_type: Any, raw: Dict[str, Any], ctx: str) -> Dict[str, Any]:
+    allowed = {f.name for f in fields(dc_type)}
+    extras = sorted([k for k in raw.keys() if k not in allowed])
+    if extras:
+        logger.warning("Config: chaves ignoradas para %s: %s", ctx, ", ".join(extras))
+    return {k: v for k, v in raw.items() if k in allowed}
 
-    if raw.get("backbone_kimianet_weights"):
-        raw["backbone_kimianet_weights"] = Path(raw["backbone_kimianet_weights"])
 
-    raw["mlflow_tracking_uri"] = Path(raw.get("mlflow_tracking_uri", "mlruns"))
-    raw["output_dir"] = Path(raw.get("output_dir", "experiments"))
+def load_config(path: str) -> TrainConfig:
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
 
-    return TrainConfig(**raw)
+    raw = _expand_env(raw)
+
+    ch_raw = raw.get("clickhouse", {}) or {}
+    ch_kwargs = _filter_kwargs(ClickHouseConfig, ch_raw, ctx="ClickHouseConfig")
+    ch_cfg = ClickHouseConfig(**ch_kwargs)
+
+    # TrainConfig (top-level)
+    train_kwargs = _filter_kwargs(TrainConfig, raw, ctx="TrainConfig")
+    train_kwargs["clickhouse"] = ch_cfg
+    cfg = TrainConfig(**train_kwargs)
+
+    # Validação leve
+    valid_aggs = {"mean_prob", "majority_vote"}
+    if cfg.slide_aggregation not in valid_aggs:
+        raise ValueError(
+            f"slide_aggregation inválido: {cfg.slide_aggregation}. Use um de: {sorted(valid_aggs)}"
+        )
+
+    valid_label_modes = {"stage", "binary"}
+    if cfg.label_mode not in valid_label_modes:
+        raise ValueError(
+            f"label_mode inválido: {cfg.label_mode}. Use um de: {sorted(valid_label_modes)}"
+        )
+
+    return cfg

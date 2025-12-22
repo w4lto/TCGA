@@ -1,4 +1,3 @@
-version: '3.9'
 services:
   clickhouse:
     container_name: clickhouse-ml
@@ -33,6 +32,7 @@ services:
       - ./data:/app/data
       - ./experiments:/app/experiments
       - ./mlruns:/app/mlruns
+      - /run/media/joao/SSD Lexar/tcga:/run/media/joao/SSD Lexar/tcga:ro,Z
     environment:
       MLFLOW_TRACKING_URI: /app/mlruns
       TF_FORCE_GPU_ALLOW_GROWTH: 'true'
@@ -40,5 +40,13 @@ services:
       - bash
       - '-c'
       - sleep infinity
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities:
+                - gpu
     gpus: all
     working_dir: /app

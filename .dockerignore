@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.pytest_cache/
+
+# Artifacts / experiments
+mlruns/
+experiments/
+logs/
+*.log
+
+# ClickHouse local data (NUNCA deve ir para build context)
+db/clickhouse/data/
+db/clickhouse/data/**
+
+data/
+data/**
+!data/.gitkeep
