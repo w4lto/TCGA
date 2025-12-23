@@ -19,10 +19,20 @@ class ClickHouseConfig:
     database: str = "ml_histopath"
     table_slides: str = "tcga_slides"
     table_patches: str = "tcga_patches"
+    limit_per_split: int = None
+    
 
 
 @dataclass
 class TrainConfig:
+    #Run
+    run_name: str
+
+    # Log
+    log_level: str
+    
+    stage_clinical_weights:dict[str,float] = None
+    
     # Reprodutibilidade
     seed: int = 42
 
@@ -44,7 +54,10 @@ class TrainConfig:
     early_stopping_patience: int = 5
     dynamic_class_weights = True
     backbone_kimianet_weights:str = "models/KimiaNetKerasWeights.h5"
-    class_names:list[str] = ["I", "II", "III", "IV"]
+    class_names:list[str] = field(default_factory=["I", "II", "III", "IV"])
+    stride: int = 256
+    dropout: float = 0.3
+    use_resnet:bool = True
 
     # Task
     num_classes: int = 4  # I/II/III/IV (ou 2 no binário)

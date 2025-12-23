@@ -2,22 +2,21 @@ from __future__ import annotations
 
 import argparse
 import random
-from typing import Dict, Any, List
+from pathlib import Path
+from typing import Dict, Any, List, Optional
 
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 from tensorflow import keras
 
 from src.utils.config_utils import load_config, TrainConfig
-from src.utils.logging_utils import setup_logging
+from src.utils.logging_utils import logger
 from src.utils.mlflow_utils import init_mlflow, start_run, log_metrics
 from src.utils.tf_device_utils import setup_tf_device
 
 from src.data.tf_dataset import (
-    create_tf_datasets_from_clickhouse,
-    load_splits_from_clickhouse,
-    build_label_mapping,
-    make_tf_dataset,
+    create_tf_datasets_from_clickhouse
 )
 from src.models.kimianet_backbone_tf import build_kimianet_backbone_tf
 from src.models.resnet_backbone_tf import build_resnet_backbone_tf
@@ -29,37 +28,44 @@ from src.training.metrics_utils import (
     compute_slide_metrics_multiclass,
 )
 
-from pathlib import Path
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' # Silencia avisos do TensorFlow (CUDA/XLA)
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
 
-
 def compute_class_weights_dynamic(cfg: TrainConfig, label_map: Dict[str, int]):
     """
-    Calcula pesos de classe dinâmicos a partir da distribuição de patches no split 'train',
-    combinando peso inversamente proporcional à frequência com pesos clínicos (stage_clinical_weights).
+    Calcula pesos de classe dinâmicos baseados na frequência no banco de dados.
     """
     assert cfg.clickhouse is not None
     ch = ClickHouseClient(cfg.clickhouse)
-    client = ch.get_client()
-    df = client.query_df(
-        f"SELECT stage_label FROM {cfg.clickhouse.table_patches} WHERE split = 'train'"
-    )
-    counts = df["stage_label"].value_counts().to_dict()
+    
+    # Query otimizada para contar apenas o necessário
+    query = f"SELECT stage_label, count(*) as cnt FROM {cfg.clickhouse.table_patches} WHERE split = 'train' GROUP BY stage_label"
+    df = ch.query_df(query)
+    
+    # Converte para dict {label: count}
+    counts = dict(zip(df["stage_label"], df["cnt"]))
+    logger.info(f"Base stage count: {counts}")
 
     num_classes = len(cfg.class_names)
     freqs = np.zeros(num_classes, dtype=float)
+    
+    # Mapeia contagens para índices inteiros
     for name, index in label_map.items():
         freqs[index] = counts.get(name, 0)
 
-    freqs[freqs == 0] = 1.0
+    # Evita divisão por zero
+    freqs[freqs == 0] = 1.0 
+    
+    # Inverso da frequência (balanceamento)
     inv = 1.0 / freqs
     inv = inv / inv.sum()
 
+    # Boost clínico opcional
     if cfg.stage_clinical_weights:
         boost = np.array(
             [cfg.stage_clinical_weights.get(name, 1.0) for name in cfg.class_names],
@@ -69,187 +75,186 @@ def compute_class_weights_dynamic(cfg: TrainConfig, label_map: Dict[str, int]):
     else:
         weights = inv
 
+    # Normaliza para que a soma seja 1 (ou escala conforme preferência)
     weights = weights / weights.sum()
+    
     return {int(i): float(w) for i, w in enumerate(weights)}
 
 
 def main(config_path: str) -> None:
     cfg = load_config(config_path)
+    logger.info(f"Loaded config: {cfg}")
     set_seed(cfg.seed)
 
-    log_dir = Path(os.path.join(cfg.output_dir, "logs"))
-    logger = setup_logging(log_dir, "train_tf")
-
-    # Configura dispositivo TF + memory growth
+    # Configura Hardware
     device_str, device_desc = setup_tf_device()
     logger.info(f"TensorFlow device: {device_desc}")
 
     # Inicializa MLflow
     tracking_uri = Path(cfg.mlflow_tracking_uri)
-    logger.info(f"Using tracking uri: {tracking_uri} | experiment: {cfg.experiment_name}")
     init_mlflow(tracking_uri, cfg.experiment_name)
+    
     params: Dict[str, Any] = {
         "task_type": cfg.task_type,
         "class_names": ",".join(cfg.class_names),
         "batch_size": cfg.batch_size,
         "patch_size": cfg.patch_size,
-        "stride": cfg.stride,
+        "model_type": "Ensemble (KimiaNet + ResNet)" if cfg.use_resnet else "KimiaNet",
         "learning_rate": cfg.learning_rate,
-        "num_epochs": cfg.num_epochs,
-        "dropout": cfg.dropout,
-        "device": cfg.device,
-        "slide_aggregation": cfg.slide_aggregation,
+        "early_stopping_patience": cfg.early_stopping_patience,
     }
     start_run(cfg.run_name, params=params)
 
     with tf.device(device_str):
-        # Datasets
         train_ds, val_ds, test_ds, label_map = create_tf_datasets_from_clickhouse(cfg)
-
         num_classes = len(cfg.class_names)
 
-        # Backbones individuais
         backbones: List[keras.Model] = []
-        backbones.append(
-            build_kimianet_backbone_tf(
+        
+        backbone_path = Path(cfg.backbone_kimianet_weights)
+        kimianet = build_kimianet_backbone_tf(
+            num_classes=num_classes,
+            weights_path=backbone_path,
+            dropout=cfg.dropout,
+        )
+        backbones.append(kimianet)
+
+        if cfg.use_resnet:
+            resnet = build_resnet_backbone_tf(
                 num_classes=num_classes,
-                weights_path=cfg.backbone_kimianet_weights,
                 dropout=cfg.dropout,
             )
-        )
-        if cfg.use_resnet:
-            backbones.append(
-                build_resnet_backbone_tf(
-                    num_classes=num_classes,
-                    dropout=cfg.dropout,
-                )
-            )
+            backbones.append(resnet)
 
-        # Ensemble (média de logits)
+        # Ensemble
         model = build_ensemble_model_tf(backbones, num_classes=num_classes)
 
-        loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-        metrics = [
-            keras.metrics.SparseCategoricalAccuracy(name="accuracy"),
-        ]
+        # ATENÇÃO: Se o Ensemble faz a média de Softmax (probabilidades), from_logits deve ser False.
+        # Se faz média de outputs lineares, deve ser True. Assumindo Probabilidades aqui:
+        loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=False)
+        
+        optimizer = keras.optimizers.Adam(learning_rate=cfg.learning_rate)
+        
+        metrics = [keras.metrics.SparseCategoricalAccuracy(name="accuracy")]
 
-        optimizer = keras.optimizers.Adam(
-            learning_rate=cfg.learning_rate,
-        )
+        model.compile(optimizer=optimizer, loss=loss_fn, metrics=metrics)
+        model.summary(print_fn=logger.info)
 
-        model.compile(
-            optimizer=optimizer,
-            loss=loss_fn,
-            metrics=metrics,
-        )
-
-        # Class weights dinâmicos
         class_weight = None
         if cfg.dynamic_class_weights:
             class_weight = compute_class_weights_dynamic(cfg, label_map)
-            logger.info("class_weight inicial: %s", class_weight)
+            logger.info(f"Class weights calculados: {class_weight}")
 
+        tensorboard_callback = keras.callbacks.TensorBoard(log_dir=Path("logs"), update_freq='batch')
         callbacks = [
             keras.callbacks.EarlyStopping(
                 monitor="val_loss",
                 patience=cfg.early_stopping_patience,
-                restore_best_weights=True,
+                restore_best_weights=True, # Isso restaura os pesos da MELHOR época
+                verbose=1
             )
         ]
 
+        logger.info("Iniciando treinamento...")
         history = model.fit(
             train_ds,
             validation_data=val_ds,
             epochs=cfg.num_epochs,
             class_weight=class_weight,
             callbacks=callbacks,
+            verbose=1
         )
 
-        # Métricas de treino/val da última época
-        last_epoch = len(history.history["loss"]) - 1
-        metrics_to_log = {
-            f"train_{k}": float(history.history[k][last_epoch])
-            for k in history.history.keys()
-            if not k.startswith("val_")
-        }
-        metrics_to_log.update(
-            {
-                f"val_{k[4:]}": float(history.history[k][last_epoch])
-                for k in history.history.keys()
-                if k.startswith("val_")
-            }
-        )
-        log_metrics(metrics_to_log, step=last_epoch)
+        # Como restore_best_weights=True, o modelo atual tem os pesos da melhor época.
+        # Porém, history contém todas as épocas até a paciência acabar.
+        # Precisamos achar o índice da melhor época baseada na métrica monitorada (val_loss).
+        
+        val_loss_history = history.history["val_loss"]
+        best_epoch_idx = val_loss_history.index(min(val_loss_history))
+        logger.info(f"Melhor época identificada: {best_epoch_idx + 1}")
 
-        # Avaliação "básica" no tf.data test
+        metrics_to_log = {}
+        # Extrai métricas do histórico no índice correto
+        for k, v_list in history.history.items():
+            metric_type = "val" if k.startswith("val_") else "train"
+            clean_k = k.replace("val_", "")
+            metrics_to_log[f"{metric_type}_{clean_k}"] = float(v_list[best_epoch_idx])
+        
+        log_metrics(metrics_to_log, step=best_epoch_idx)
+
+        # Avaliação no Test Set (Básico)
+        logger.info("Avaliando test_ds (métricas básicas)...")
         test_metrics = model.evaluate(test_ds, return_dict=True)
         log_metrics({f"test_{k}": float(v) for k, v in test_metrics.items()})
-        logger.info("Métricas básicas test_ds: %s", test_metrics)
 
-        logger.info("Calculando métricas avançadas patch-level e slide-level...")
-
-        dfs = load_splits_from_clickhouse(cfg)
-        df_test = dfs["test"]
-        label_map = build_label_mapping(cfg.class_names)
-
-        test_ds_pred = make_tf_dataset(
-            df_test,
-            label_map,
-            cfg.class_names,
-            batch_size=cfg.batch_size,
-            shuffle=False,
-            patch_size=cfg.patch_size,
-        )
-
-        y_proba = model.predict(test_ds_pred, verbose=0)
-        y_true = df_test["label"].map(lambda x: label_map[x]).to_numpy()
-        slide_ids = df_test["slide_id"].to_numpy()
-
-        # Patch-level
+        # Métricas Avançadas e Slide-Level
+        logger.info("Gerando predições para métricas avançadas...")
+        
+        # Predições (Isso respeita a ordem do dataset)
+        y_proba = model.predict(test_ds, verbose=1)
+        
+        # Extração de Labels Verdadeiros do Dataset
+        # O dataset test_ds retorna (imagem, label). Precisamos extrair apenas os labels.
+        # ATENÇÃO: O test_ds NÃO deve estar com shuffle=True para garantir alinhamento
+        logger.info("Extraindo labels verdadeiros do dataset...")
+        y_true_batches = []
+        for _, batch_labels in test_ds:
+            y_true_batches.append(batch_labels.numpy())
+        
+        y_true = np.concatenate(y_true_batches, axis=0)
+        
+        if len(y_true) != len(y_proba):
+            raise RuntimeError(f"Desalinhamento! y_true tem {len(y_true)} amostras, mas y_proba tem {len(y_proba)}.")
+        
+        # Patch-level Metrics
+        logger.info("Calculando métricas Patch-Level...")
         patch_metrics = compute_patch_metrics_multiclass(
             y_true=y_true,
             y_proba=y_proba,
             class_names=cfg.class_names,
         )
-        logger.info("Patch-level metrics: %s", patch_metrics)
         log_metrics({f"patch_{k}": v for k, v in patch_metrics.items()})
 
-        # Slide-level (soft voting)
-        y_true_slide_soft, y_proba_slide_soft = aggregate_by_slide(
-            y_true=y_true,
-            y_proba=y_proba,
-            slide_ids=slide_ids,
-            method="mean_prob",
-        )
-        slide_metrics_soft = compute_slide_metrics_multiclass(
-            y_true_slide_soft,
-            y_proba_slide_soft,
-            class_names=cfg.class_names,
-        )
-        logger.info("Slide-level metrics (mean_prob): %s", slide_metrics_soft)
-        log_metrics({f"slide_soft_{k}": v for k, v in slide_metrics_soft.items()})
-
-        # Slide-level (majority vote)
-        y_true_slide_mv, y_proba_slide_mv = aggregate_by_slide(
-            y_true=y_true,
-            y_proba=y_proba,
-            slide_ids=slide_ids,
-            method="majority_vote",
-        )
-        slide_metrics_mv = compute_slide_metrics_multiclass(
-            y_true_slide_mv,
-            y_proba_slide_mv,
-            class_names=cfg.class_names,
-        )
-        logger.info("Slide-level metrics (majority_vote): %s", slide_metrics_mv)
-        log_metrics({f"slide_mv_{k}": v for k, v in slide_metrics_mv.items()})
-
-        # Salvar modelo
+        # Recuperação de Slide IDs para Métricas de Slide
+        # tf.data.Dataset perde o slide_id. Precisamos buscar do banco.
+        if cfg.clickhouse:
+            logger.info("Consultando metadados de teste para agregação por slide...")
+            ch = ClickHouseClient(cfg.clickhouse)
+            # É crucial que esta query retorne os dados NA MESMA ORDEM que o create_tf_datasets gerou
+            # Se create_tf_datasets usa ordem aleatória no teste, isso aqui vai falhar.
+            # Idealmente, o dataset de teste deve ter shuffle=False e uma ordenação determinística.
+            df_test_meta = ch.query_df(
+                f"SELECT slide_id, stage_label FROM {cfg.clickhouse.table_patches} WHERE split = 'test'"
+                # f" ORDER BY patch_id" # Recomendado se houver coluna de ID único
+            )
+            
+            if len(df_test_meta) == len(y_true):
+                slide_ids = df_test_meta["slide_id"].to_numpy()
+                
+                # Slide-level (Mean Prob)
+                y_true_slide, y_proba_slide = aggregate_by_slide(
+                    y_true=y_true,
+                    y_proba=y_proba,
+                    slide_ids=slide_ids,
+                    method="mean_prob",
+                )
+                slide_metrics = compute_slide_metrics_multiclass(
+                    y_true_slide, y_proba_slide, cfg.class_names
+                )
+                log_metrics({f"slide_soft_{k}": v for k, v in slide_metrics.items()})
+                logger.info("Métricas de slide calculadas com sucesso.")
+            else:
+                logger.warning(
+                    f"Tamanho do dataset de teste ({len(y_true)}) difere do metadata do banco ({len(df_test_meta)}). "
+                    "Pulando métricas de slide para evitar desalinhamento."
+                )
+        
+        # Salvar Modelo
         out_dir = cfg.output_dir / "models"
         out_dir.mkdir(parents=True, exist_ok=True)
-        model.save(out_dir / "ensemble_tf")
-        logger.info("Modelo salvo em ensemble_tf.")
-
+        save_path = out_dir / "ensemble_model.keras" # Formato .keras é preferido no TF > 2.10
+        model.save(save_path)
+        logger.info(f"Modelo salvo em: {save_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

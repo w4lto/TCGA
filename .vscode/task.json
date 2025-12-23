@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run GDC helper tool",
+      "type": "shell",
+      "command": "${command:python.interpreterPath}",
+      "args": [
+        "-m",
+        "src.data.gdc_helper",
+        "--gdc_root",
+        "/run/media/joao/SSD Lexar/tcga",
+        "--out_tsv",
+        "./src/data/raw/tcga_brca_clinical.tsv"
+      ],
+      "group": "build"
+    }
+  ]
+}

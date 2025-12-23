@@ -84,12 +84,10 @@ def main(
 ) -> None:
     cfg = load_config(config_path)
 
-    # Defaults “seguros” para RTX 2060 / validação rápida
     patch_size = int(patch_size or cfg.patch_size)
     stride = int(stride or patch_size)  # default: não-overlap
     max_patches_per_wsi = int(max_patches_per_wsi or 500)  # default para sanity check
 
-    # onde salvar patches no container (idealmente em /app/data/processed/...)
     if out_root:
         patches_root = Path(out_root)
     else:
@@ -105,7 +103,6 @@ def main(
     if truncate_patches:
         ch_client.command(f"TRUNCATE TABLE {patches_table}")
 
-    # Nota: seu ingest atual grava `image_path` (não `wsi_path`)
     q = f"""
     SELECT patient_id, slide_id, image_path, stage_label, split
     FROM {slides_table}
