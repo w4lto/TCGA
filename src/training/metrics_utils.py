@@ -8,8 +8,9 @@ from sklearn.metrics import (
     f1_score,
     roc_auc_score,
     classification_report,
+    precision_score,
+    recall_score
 )
-
 
 def _safe_roc_auc_multiclass(
     y_true: np.ndarray,
@@ -33,35 +34,38 @@ def _safe_roc_auc_multiclass(
         return float("nan")
 
 
-def compute_patch_metrics_multiclass(
-    y_true: np.ndarray,
-    y_proba: np.ndarray,
-    class_names: List[str],
-) -> Dict[str, float]:
+def compute_slide_metrics_multiclass(y_true, y_proba, class_names):
     """
-    Métricas em nível de PATCH para problema multi-classe (estágios I–IV).
-    - y_true: shape [N], ints
-    - y_proba: shape [N, C], probs (softmax)
+    Calcula métricas agregadas por slide (Multiclasse), forçando a presença de todas as classes.
     """
-    y_pred = y_proba.argmax(axis=1)
+    # Converte probabilidades para predição hard (0, 1, 2, 3)
+    y_pred = np.argmax(y_proba, axis=1)
+    
+    # Índices esperados (ex: [0, 1, 2, 3] para 4 classes)
+    labels_indices = list(range(len(class_names)))
 
-    metrics: Dict[str, float] = {}
-    metrics["patch_accuracy"] = float(accuracy_score(y_true, y_pred))
-    metrics["patch_f1_macro"] = float(f1_score(y_true, y_pred, average="macro"))
-
-    # F1 por classe
-    f1_per_class = cast(
-        np.ndarray,
-        f1_score(y_true, y_pred, average=None),
-    )
-    for index, cname in enumerate(class_names):
-        metrics[f"patch_f1_{cname}"] = float(f1_per_class[index])
-
-    # ROC-AUC multi-classe macro
-    metrics["patch_auc_roc_macro"] = _safe_roc_auc_multiclass(y_true, y_proba, "macro")
-
+    metrics = {}
+    
+    # 1. Acurácia Global
+    metrics["acc"] = float(accuracy_score(y_true, y_pred))
+    
+    # 2. F1 Macro e Weighted (Globais)
+    metrics["f1_macro"] = float(f1_score(y_true, y_pred, average="macro", labels=labels_indices, zero_division=0))
+    metrics["f1_weighted"] = float(f1_score(y_true, y_pred, average="weighted", labels=labels_indices, zero_division=0))
+    
+    # 3. Métricas por Classe (Onde o erro ocorria)
+    # Ao passar 'labels=labels_indices', o sklearn garante que o array retornado 
+    # tenha o tamanho correto, preenchendo com 0 onde não houver predição/ground-truth.
+    f1_per_class = f1_score(y_true, y_pred, average=None, labels=labels_indices, zero_division=0)
+    prec_per_class = precision_score(y_true, y_pred, average=None, labels=labels_indices, zero_division=0)
+    rec_per_class = recall_score(y_true, y_pred, average=None, labels=labels_indices, zero_division=0)
+    
+    for i, cname in enumerate(class_names):
+        metrics[f"slide_f1_{cname}"] = float(f1_per_class[i])
+        metrics[f"slide_prec_{cname}"] = float(prec_per_class[i])
+        metrics[f"slide_rec_{cname}"] = float(rec_per_class[i])
+        
     return metrics
-
 
 def aggregate_by_slide(
     y_true: np.ndarray,

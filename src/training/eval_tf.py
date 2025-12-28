@@ -13,7 +13,7 @@ from src.data.tf_dataset import (
     build_label_mapping,
 )
 from src.training.metrics_utils import (
-    compute_patch_metrics_multiclass,
+    compute_slide_metrics_multiclass,
     aggregate_by_slide,
     compute_slide_metrics_multiclass,
     dump_classification_report,
@@ -48,7 +48,7 @@ def main(config_path: str) -> None:
         y_true = df_test["label"].map(lambda x: label_map[x]).to_numpy()
         slide_ids = df_test["slide_id"].to_numpy()
 
-    patch_metrics = compute_patch_metrics_multiclass(
+    patch_metrics = compute_slide_metrics_multiclass(
         y_true=y_true,
         y_proba=y_proba,
         class_names=cfg.class_names,

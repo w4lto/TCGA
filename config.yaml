@@ -3,11 +3,11 @@ data_root: "data"
 task_type: "stage_multiclass"
 class_names: ["I", "II", "III", "IV"]
 
-# stage_clinical_weights:
-#   I: 1.5
-#   II: 1.3
-#   III: 1.0
-#   IV: 0.8
+stage_clinical_weights:
+  I: 1
+  II: 1
+  III: 1
+  IV: 1
 dynamic_class_weights: true
 
 patch_size: 256
@@ -31,9 +31,9 @@ use_resnet: true
 dropout: 0.3
 
 num_epochs: 20
-learning_rate: 0.0001
+learning_rate: 0.00005
 weight_decay: 0.0001
-early_stopping_patience: 5
+early_stopping_patience: 8
 
 experiment_name: "tcga_brca_stage_tf"
 run_name: "kimianet_resnet_stage_ensemble_clickhouse"

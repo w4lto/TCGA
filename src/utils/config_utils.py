@@ -76,6 +76,10 @@ class TrainConfig:
 
     # ClickHouse
     clickhouse: ClickHouseConfig = field(default_factory=ClickHouseConfig)
+    
+    data_root: str = "data"
+    
+    image_size: int = 256
 
 
 def _expand_env(obj: Any) -> Any:

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' # Silencia avisos do TensorFlow (CUDA/XLA)
+
 import argparse
 import random
 from pathlib import Path
@@ -21,20 +24,22 @@ from src.data.tf_dataset import (
 from src.models.kimianet_backbone_tf import build_kimianet_backbone_tf
 from src.models.resnet_backbone_tf import build_resnet_backbone_tf
 from src.models.ensemble_tf import build_ensemble_model_tf
-from src.data.ch_utils import ClickHouseClient
+from src.data.ch_utils import (
+    ClickHouseClient    
+)
 from src.training.metrics_utils import (
-    compute_patch_metrics_multiclass,
+    compute_slide_metrics_multiclass,
     aggregate_by_slide,
     compute_slide_metrics_multiclass,
 )
 
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' # Silencia avisos do TensorFlow (CUDA/XLA)
+
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
+
 
 def compute_class_weights_dynamic(cfg: TrainConfig, label_map: Dict[str, int]):
     """
@@ -63,6 +68,9 @@ def compute_class_weights_dynamic(cfg: TrainConfig, label_map: Dict[str, int]):
     
     # Inverso da frequência (balanceamento)
     inv = 1.0 / freqs
+    
+    inv = np.power(inv, 0.25)
+    
     inv = inv / inv.sum()
 
     # Boost clínico opcional
@@ -79,7 +87,6 @@ def compute_class_weights_dynamic(cfg: TrainConfig, label_map: Dict[str, int]):
     weights = weights / weights.sum()
     
     return {int(i): float(w) for i, w in enumerate(weights)}
-
 
 def main(config_path: str) -> None:
     cfg = load_config(config_path)
@@ -117,6 +124,21 @@ def main(config_path: str) -> None:
             weights_path=backbone_path,
             dropout=cfg.dropout,
         )
+
+        # ESTRATÉGIA DE CONGELAMENTO SELETIVO
+        # 1. Congela todas as camadas primeiro
+        for layer in kimianet.layers:
+            layer.trainable = False
+            
+        # 2. Descongela explicitamente a ÚLTIMA camada (Dense/Classifier)
+        # e também as camadas de BatchNormalization (prática recomendada em Fine-tuning)
+        last_layer = kimianet.layers[-1]
+        if isinstance(last_layer, keras.layers.Dense):
+            last_layer.trainable = True
+            logger.info(f"Camada descongelada em KimiaNet: {last_layer.name}")
+            
+
+
         backbones.append(kimianet)
 
         if cfg.use_resnet:
@@ -124,16 +146,30 @@ def main(config_path: str) -> None:
                 num_classes=num_classes,
                 dropout=cfg.dropout,
             )
+            
+            # Mesma lógica para ResNet
+            for layer in resnet.layers:
+                layer.trainable = False
+                
+            last_layer = resnet.layers[-1]
+            if isinstance(last_layer, keras.layers.Dense):
+                last_layer.trainable = True
+                logger.info(f"Camada descongelada em ResNet: {last_layer.name}")
+                
+
             backbones.append(resnet)
 
-        # Ensemble
+        # Ensemble (média de logits)
         model = build_ensemble_model_tf(backbones, num_classes=num_classes)
 
         # ATENÇÃO: Se o Ensemble faz a média de Softmax (probabilidades), from_logits deve ser False.
         # Se faz média de outputs lineares, deve ser True. Assumindo Probabilidades aqui:
-        loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=False)
+        loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         
-        optimizer = keras.optimizers.Adam(learning_rate=cfg.learning_rate)
+        optimizer = keras.optimizers.Adam(
+            learning_rate=cfg.learning_rate,
+            #clipnorm=1.0
+        )
         
         metrics = [keras.metrics.SparseCategoricalAccuracy(name="accuracy")]
 
@@ -146,13 +182,30 @@ def main(config_path: str) -> None:
             logger.info(f"Class weights calculados: {class_weight}")
 
         tensorboard_callback = keras.callbacks.TensorBoard(log_dir=Path("logs"), update_freq='batch')
+        
+        lr_scheduler = keras.callbacks.ReduceLROnPlateau(
+            monitor="val_loss",
+            factor=0.5,
+            patience=2,
+            min_lr=1e-7,
+            verbose=1
+        )
+
+        csv_logger = keras.callbacks.CSVLogger(
+            "training_history.csv",
+            append=False
+        )
+        
         callbacks = [
             keras.callbacks.EarlyStopping(
                 monitor="val_loss",
                 patience=cfg.early_stopping_patience,
                 restore_best_weights=True, # Isso restaura os pesos da MELHOR época
                 verbose=1
-            )
+            ),
+            lr_scheduler,
+            csv_logger,
+            tensorboard_callback
         ]
 
         logger.info("Iniciando treinamento...")
@@ -208,10 +261,10 @@ def main(config_path: str) -> None:
         
         # Patch-level Metrics
         logger.info("Calculando métricas Patch-Level...")
-        patch_metrics = compute_patch_metrics_multiclass(
-            y_true=y_true,
-            y_proba=y_proba,
-            class_names=cfg.class_names,
+        patch_metrics = compute_slide_metrics_multiclass(
+            y_proba_slide=y_proba,
+            y_true_slide=y_true,
+            class_names=cfg.class_names
         )
         log_metrics({f"patch_{k}": v for k, v in patch_metrics.items()})
 

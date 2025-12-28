@@ -211,3 +211,8 @@ __marimo__/
 /src/data/raw
 /mlruns
 /db
+
+src/training/check_images.py
+src/training/clean_db.py
+training_history.csv
+/logs

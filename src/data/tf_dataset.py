@@ -178,26 +178,26 @@ def create_tf_datasets_from_clickhouse(
     train_ds = make_tf_dataset(
         df_train,
         label_map=label_map,
-        image_size=getattr(cfg, "image_size", 224),
-        batch_size=getattr(cfg, "batch_size", 8),
+        image_size=cfg.image_size,
+        batch_size=cfg.batch_size,
         shuffle=True,
-        seed=getattr(cfg, "seed", 42),
+        seed=cfg.seed,
     )
     val_ds = make_tf_dataset(
         df_val,
         label_map=label_map,
-        image_size=getattr(cfg, "image_size", 224),
-        batch_size=getattr(cfg, "batch_size", 8),
+        image_size=cfg.image_size,
+        batch_size=cfg.batch_size,
         shuffle=False,
-        seed=getattr(cfg, "seed", 42),
+        seed=cfg.seed,
     )
     test_ds = make_tf_dataset(
         df_test,
         label_map=label_map,
-        image_size=getattr(cfg, "image_size", 224),
-        batch_size=getattr(cfg, "batch_size", 8),
+        image_size=cfg.image_size,
+        batch_size=cfg.batch_size,
         shuffle=False,
-        seed=getattr(cfg, "seed", 42),
+        seed=cfg.seed,
     )
 
     return train_ds, val_ds, test_ds, label_map
