@@ -1,0 +1,13 @@
+tensorflow[and-cuda]>=2.15
+numpy
+pandas
+opencv-python-headless
+openslide-python
+Pillow
+scikit-image
+scikit-learn
+pyyaml
+mlflow
+tqdm
+clickhouse-connect
+pytest

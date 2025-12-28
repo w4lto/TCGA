@@ -1,0 +1,63 @@
+data_root: "data"
+
+task_type: "stage_multiclass"
+class_names: ["I", "II", "III", "IV"]
+
+stage_clinical_weights:
+  I: 1
+  II: 1
+  III: 1
+  IV: 1
+dynamic_class_weights: true
+
+patch_size: 256
+stride: 256
+batch_size: 16
+num_workers: 4
+max_patches_per_wsi: 512
+
+val_split: 0.15
+test_split: 0.15
+num_folds: 1
+fold_index: 0
+
+mixed_precision: true
+prefetch: 2
+num_classes: 4
+label_mode: "stage"
+
+backbone_kimianet_weights: "models/KimiaNetKerasWeights.h5"
+use_resnet: true
+dropout: 0.3
+
+num_epochs: 20
+learning_rate: 0.00005
+weight_decay: 0.0001
+early_stopping_patience: 8
+
+experiment_name: "tcga_brca_stage_tf"
+run_name: "kimianet_resnet_stage_ensemble_clickhouse"
+mlflow_tracking_uri: "mlruns"
+output_dir: "experiments/tcga_stage_tf"
+
+seed: 42
+device: "gpu"  # "gpu" ou "cpu"
+
+# Agregação slide-level:
+# - "mean_prob": média das probabilidades dos patches (soft voting)
+# - "majority_vote": frequência de classes preditas (hard voting)
+slide_aggregation: "mean_prob"
+
+clickhouse:
+  host: "clickhouse"
+  port: 8123
+  username: "default"
+  password: ""
+  database: "ml_histopath"
+  table_slides: "tcga_slides"
+  table_patches: "tcga_patches"
+  limit_per_split: null
+
+tcga_max_slides_per_stage: 20
+
+log_level: DEBUG

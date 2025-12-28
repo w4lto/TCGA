@@ -1,0 +1,52 @@
+services:
+  clickhouse:
+    container_name: clickhouse-ml
+    image: clickhouse/clickhouse-server:24.8
+    restart: unless-stopped
+    ports:
+      - '8123:8123'
+      - '9000:9000'
+    volumes:
+      - ./db/clickhouse/data:/var/lib/clickhouse
+      - ./db/clickhouse/init:/docker-entrypoint-initdb.d
+    environment:
+      CLICKHOUSE_DB: ml_histopath
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ''
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  app:
+    container_name: histopath-tf-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - clickhouse
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - ./experiments:/app/experiments
+      - ./mlruns:/app/mlruns
+      - /run/media/joao/SSD Lexar/tcga:/run/media/joao/SSD Lexar/tcga:ro,Z
+    environment:
+      MLFLOW_TRACKING_URI: /app/mlruns
+      TF_FORCE_GPU_ALLOW_GROWTH: 'true'
+    command:
+      - bash
+      - '-c'
+      - sleep infinity
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities:
+                - gpu
+    gpus: all
+    working_dir: /app
