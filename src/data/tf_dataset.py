@@ -7,6 +7,7 @@ import tensorflow as tf
 
 from src.data.ch_utils import ClickHouseClient
 from src.utils.config_utils import TrainConfig
+from src.utils.logging_utils import logger
 
 
 def _normalize_stage_label(x: str) -> str:
@@ -115,39 +116,51 @@ def make_tf_dataset(
     seed: object,
 ) -> tf.data.Dataset:
     path_col = _get_path_column(df)
-
     image_size_i = _coerce_int(image_size, "image_size")
     batch_size_i = _coerce_int(batch_size, "batch_size")
     seed_i = _coerce_int(seed, "seed")
-
+    
     paths = df[path_col].astype(str).tolist()
     labels_str = df["stage_label"].astype(str).tolist()
     labels_str = [_normalize_stage_label(x) for x in labels_str]
-
+    
     missing = sorted(set(labels_str) - set(label_map.keys()))
     if missing:
         raise RuntimeError(f"Labels não mapeadas: {missing}. label_map={label_map}")
-
+    
     labels = [label_map[x] for x in labels_str]
-
+    
     ds = tf.data.Dataset.from_tensor_slices((paths, labels))
-
+    
     if shuffle:
         ds = ds.shuffle(
             buffer_size=min(10_000, len(paths)),
             seed=seed_i,
             reshuffle_each_iteration=True,
         )
-
+    
     def _map_fn(p, y):
         img = _decode_image(p, image_size=image_size_i)
         return img, y
 
-    ds = ds.map(_map_fn, num_parallel_calls=tf.data.AUTOTUNE)
+    import os
+    num_cpus = os.cpu_count() or 8
+    parallel_calls = max(4, num_cpus // 2)
+    
+    logger.info(f"Usando num_parallel_calls={parallel_calls}")
+    
+    ds = ds.map(
+        _map_fn,
+        num_parallel_calls=parallel_calls,
+        deterministic=False  # Permite reordenação para melhor performance
+    )
+    
+    ds = ds.apply(tf.data.experimental.ignore_errors(log_warning=True))
+    
     ds = ds.batch(batch_size_i, drop_remainder=False)
-    ds = ds.prefetch(tf.data.AUTOTUNE)
+    ds = ds.prefetch(tf.data.AUTOTUNE)  # Prefetch pode usar AUTOTUNE
+    
     return ds
-
 
 def create_tf_datasets_from_clickhouse(
     cfg: TrainConfig,
@@ -199,5 +212,7 @@ def create_tf_datasets_from_clickhouse(
         shuffle=False,
         seed=cfg.seed,
     )
+
+    test_ds = test_ds.cache()
 
     return train_ds, val_ds, test_ds, label_map

@@ -114,35 +114,6 @@ def aggregate_by_slide(
     return np.array(y_true_slide_list), np.vstack(y_proba_slide_list)
 
 
-def compute_slide_metrics_multiclass(
-    y_true_slide: np.ndarray,
-    y_proba_slide: np.ndarray,
-    class_names: List[str],
-) -> Dict[str, float]:
-    """
-    Métricas em nível de SLIDE para problema multi-classe.
-    """
-    y_pred_slide = y_proba_slide.argmax(axis=1)
-
-    metrics: Dict[str, float] = {}
-    metrics["slide_accuracy"] = float(accuracy_score(y_true_slide, y_pred_slide))
-    metrics["slide_f1_macro"] = float(
-        f1_score(y_true_slide, y_pred_slide, average="macro")
-    )
-
-    f1_per_class = cast(
-        np.ndarray,
-        f1_score(y_true_slide, y_pred_slide, average=None),
-    )
-    for index, cname in enumerate(class_names):
-        metrics[f"slide_f1_{cname}"] = float(f1_per_class[index])
-
-    metrics["slide_auc_roc_macro"] = _safe_roc_auc_multiclass(
-        y_true_slide, y_proba_slide, "macro"
-    )
-
-    return metrics
-
 
 def dump_classification_report(
     y_true: np.ndarray,

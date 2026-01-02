@@ -12,7 +12,7 @@ dynamic_class_weights: true
 
 patch_size: 256
 stride: 256
-batch_size: 16
+batch_size: 8
 num_workers: 4
 max_patches_per_wsi: 512
 
@@ -30,13 +30,13 @@ backbone_kimianet_weights: "models/KimiaNetKerasWeights.h5"
 use_resnet: true
 dropout: 0.3
 
-num_epochs: 20
-learning_rate: 0.00005
+num_epochs: 30
+learning_rate: 0.0001
 weight_decay: 0.0001
-early_stopping_patience: 8
+early_stopping_patience: 7
 
-experiment_name: "tcga_brca_stage_tf"
-run_name: "kimianet_resnet_stage_ensemble_clickhouse"
+experiment_name: "tcga_stage_fine_tuning"
+run_name: "model_poc_01"
 mlflow_tracking_uri: "mlruns"
 output_dir: "experiments/tcga_stage_tf"
 
@@ -61,3 +61,5 @@ clickhouse:
 tcga_max_slides_per_stage: 20
 
 log_level: DEBUG
+
+training_strategy: "progressive"

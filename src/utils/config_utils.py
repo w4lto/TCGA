@@ -80,6 +80,8 @@ class TrainConfig:
     data_root: str = "data"
     
     image_size: int = 256
+    
+    training_strategy: str = "progressive"
 
 
 def _expand_env(obj: Any) -> Any:
