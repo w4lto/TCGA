@@ -142,7 +142,6 @@ def apply_unfreezing_strategy(
                     break
                     
         elif strategy == TrainingStrategy.FULL_FINETUNING:
-            # Últimas 15 camadas (CONSERVADOR)
             layers_to_unfreeze = min(15, max(3, len(all_trainable_layers) // 4))
             logger.info(
                 f"Estratégia: Full Fine-tuning - "
@@ -311,38 +310,66 @@ def apply_randstaina_tf(image: tf.Tensor, std_hyper: float = 0.4) -> tf.Tensor:
     
     return img_augmented
 
-
 def add_data_augmentation(
     train_ds: tf.data.Dataset,
     enable_stain_aug: bool = True,
     stain_intensity: float = 0.4,
     stain_probability: float = 0.8
 ) -> tf.data.Dataset:
+    """
+    Data augmentation AVANÇADO para histopatologia.
+    
+    Pipeline otimizado baseado em MICCAI 2024.
+    """
     def augment(image, label):
-        # Histopatologia é invariante a rotações/flips
+        # CRÍTICO: Garantir que imagem tem shape correto [H, W, 3]
+        original_shape = tf.shape(image)
+        
+        # Verificar se tem 3 canais
+        if len(image.shape) == 3 and image.shape[-1] != 3:
+            # Se tiver 1 canal, converter para 3
+            image = tf.image.grayscale_to_rgb(image)
+        elif len(image.shape) == 2:
+            # Se for [H, W], adicionar dimensão de canal
+            image = tf.expand_dims(image, axis=-1)
+            image = tf.image.grayscale_to_rgb(image)
+        
+        # 1. GEOMETRIC AUGMENTATIONS
         image = tf.image.random_flip_left_right(image)
         image = tf.image.random_flip_up_down(image)
         
-        # Rotação em múltiplos de 90° (preserva estrutura celular)
+        # Rotação em múltiplos de 90° com validação de shape
         k = tf.random.uniform(shape=[], minval=0, maxval=4, dtype=tf.int32)
         image = tf.image.rot90(image, k=k)
         
-        # Brightness/Contrast SUTIS (não distorcer coloração H&E)
-        image = tf.image.random_brightness(image, max_delta=0.1)  # Reduzido de 0.05
-        image = tf.image.random_contrast(image, lower=0.9, upper=1.1)  # Reduzido
+        # CRÍTICO: Após rot90, garantir que ainda tem 3 canais
+        # rot90 pode alterar ordem das dimensões em alguns casos
+        current_shape = tf.shape(image)
+        if len(image.shape) == 3:
+            # Se shape ficou [C, H, W], converter para [H, W, C]
+            if image.shape[0] == 3 or current_shape[0] == 3:
+                image = tf.transpose(image, [1, 2, 0])
+            # Se shape ficou [H, W, 1], converter para [H, W, 3]
+            elif image.shape[-1] == 1 or current_shape[-1] == 1:
+                image = tf.image.grayscale_to_rgb(image)
         
-        # Hue shift MÍNIMO (H&E tem cor específica)
-        image = tf.image.random_hue(image, max_delta=0.02)  # NOVO: muito sutil
+        # 2. COLOR AUGMENTATIONS (Sutis)
+        image = tf.image.random_brightness(image, max_delta=0.1)
+        image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
+        image = tf.image.random_hue(image, max_delta=0.02)
         
+        # 3. STAIN AUGMENTATION (CRÍTICO)
         if enable_stain_aug:
-            # RandStainNA: Simula variações de staining entre labs/scanners
-            should_apply_stain = tf.random.uniform([]) < stain_probability
-            image = tf.cond(
-                should_apply_stain,
-                lambda: apply_randstaina_tf(image, std_hyper=stain_intensity),
-                lambda: image
-            )
+            # Garantir shape [H, W, 3] antes de aplicar RandStainNA
+            if len(image.shape) == 3 and image.shape[-1] == 3:
+                should_apply_stain = tf.random.uniform([]) < stain_probability
+                image = tf.cond(
+                    should_apply_stain,
+                    lambda: apply_randstaina_tf(image, std_hyper=stain_intensity),
+                    lambda: image
+                )
         
+        # 4. NORMALIZATION & CLIPPING
         image = tf.clip_by_value(image, 0.0, 1.0)
         
         return image, label
@@ -361,22 +388,6 @@ def apply_mixup_to_dataset(
     alpha: float = 0.2,
     num_classes: int = 4
 ) -> tf.data.Dataset:
-    """
-    Aplica Mixup ao dataset inteiro.
-    
-    IMPORTANTE: Mixup em histopatologia deve ser CONSERVADOR (alpha=0.2).
-    Alpha muito alto pode criar artefatos irrealistas.
-    
-    Referência: MICCAI 2024 workshop mostrou que alpha=0.2 é ótimo para WSI.
-    
-    Args:
-        dataset: Dataset original
-        alpha: Parâmetro Beta (0.2 recomendado para histopatologia)
-        num_classes: Número de classes
-    
-    Returns:
-        Dataset com Mixup aplicado
-    """
     def mixup(images, labels):
         batch_size = tf.shape(images)[0]
         
@@ -402,6 +413,8 @@ def apply_mixup_to_dataset(
         mixed_images = lambda_img * images + (1.0 - lambda_img) * images_shuffled
         mixed_labels = lambda_lbl * tf.cast(labels, tf.float32) + \
                        (1.0 - lambda_lbl) * tf.cast(labels_shuffled, tf.float32)
+        
+        mixed_labels = tf.argmax(mixed_labels, axis=-1)
         
         return mixed_images, mixed_labels
     
@@ -432,12 +445,14 @@ def train_single_phase(
             stain_probability=0.8
         )
     
+    alpha_value = 0.2
+    
     if enable_mixup:
-        logger.info("Aplicando Mixup (alpha=0.2, conservador para histopatologia)...")
+        logger.info(f"Aplicando Mixup (alpha={alpha_value})...")
         # Mixup deve ser aplicado APÓS batching
         train_ds = apply_mixup_to_dataset(
             train_ds,
-            alpha=0.2,  # Conservador para preservar features histológicas
+            alpha=alpha_value,
             num_classes=num_classes
         )
         
@@ -641,7 +656,7 @@ def main(config_path: str) -> None:
             logger.info("INICIANDO TREINAMENTO PROGRESSIVO (3 FASES)")
             logger.info("=" * 80)
             
-            for phase in [1, 2]:
+            for phase in [1, 2, 3]:
                 logger.info(f"\n{'=' * 80}")
                 logger.info(f"FASE {phase}/3")
                 logger.info(f"{'=' * 80}")
@@ -655,7 +670,7 @@ def main(config_path: str) -> None:
                 phase_config = get_phase_config(strategy, phase=phase)
                 
                 # Compilar modelo com novo LR
-                loss_fn = keras.losses.CategoricalCrossentropy(from_logits=True)
+                loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
                 optimizer = keras.optimizers.Adam(
                     learning_rate=phase_config["learning_rate"]
                 )
@@ -676,7 +691,8 @@ def main(config_path: str) -> None:
                     output_dir=str(output_dir),
                     phase_name=f'phase{phase}',
                     enable_mixup=True,
-                    num_classes=num_classes
+                    num_classes=num_classes,
+                    enable_augmentation=True
                 )
                 
                 full_history[f'phase{phase}'] = history.history
@@ -700,7 +716,7 @@ def main(config_path: str) -> None:
             
             # Melhor resultado geral
             best_phase = max(
-                [1, 2],
+                [1, 2, 3],
                 key=lambda p: max(full_history[f'phase{p}']['val_accuracy'])
             )
             best_val_acc_overall = max(
@@ -710,7 +726,7 @@ def main(config_path: str) -> None:
             logger.info("=" * 80)
             logger.info("RESUMO DO TREINAMENTO PROGRESSIVO")
             logger.info("=" * 80)
-            for phase in [1, 2]:
+            for phase in [1, 2, 3]:
                 best_acc = max(full_history[f'phase{phase}']['val_accuracy'])
                 logger.info(f"Fase {phase}: val_accuracy = {best_acc:.4f}")
             logger.info(f"Melhor resultado: Fase {best_phase} ({best_val_acc_overall:.4f})")
@@ -726,7 +742,7 @@ def main(config_path: str) -> None:
             train_config = get_phase_config(strategy)
             
             # Compilar
-            loss_fn = keras.losses.CategoricalCrossentropy(from_logits=True)
+            loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
             optimizer = keras.optimizers.Adam(
                 learning_rate=train_config["learning_rate"]
             )
@@ -743,7 +759,10 @@ def main(config_path: str) -> None:
                 phase_config=train_config,
                 class_weight=class_weight,
                 output_dir=str(output_dir),
-                phase_name='standard'
+                phase_name='standard',
+                enable_augmentation=True,
+                enable_mixup=True,
+                num_classes=num_classes
             )
             
             full_history['standard'] = history.history

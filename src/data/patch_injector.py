@@ -144,6 +144,8 @@ def main(
             top_cellularity_quantile=top_cellularity_quantile,
             max_patches=max_patches_per_wsi,
             patient_id_hint=patient_id,
+            ensure_spatial_diversity=True,  
+            min_distance_multiplier=2.0
         )
 
         for i, info in enumerate(patch_infos):
@@ -197,6 +199,10 @@ if __name__ == "__main__":
 
     parser.add_argument("--limit_slides", type=int, default=None, help="Limita número de slides para validação rápida")
     parser.add_argument("--truncate_patches", action="store_true", help="TRUNCATE na tabela de patches antes de inserir")
+    
+    parser.add_argument("--ensure_spatial_diversity", action="store_true", default=True, help="Garante diversidade espacial entre patches")
+
+    parser.add_argument("--min_distance_multiplier", type=float, default=2.0, help="Distância mínima = multiplier × patch_size")
 
     args = parser.parse_args()
 

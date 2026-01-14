@@ -155,7 +155,7 @@ def make_tf_dataset(
         deterministic=False  # Permite reordenação para melhor performance
     )
     
-    ds = ds.apply(tf.data.experimental.ignore_errors(log_warning=True))
+    #ds = ds.apply(tf.data.experimental.ignore_errors(log_warning=True))
     
     ds = ds.batch(batch_size_i, drop_remainder=False)
     ds = ds.prefetch(tf.data.AUTOTUNE)  # Prefetch pode usar AUTOTUNE

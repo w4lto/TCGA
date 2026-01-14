@@ -25,23 +25,13 @@ class PatchInfo:
 
 
 def segment_tissue(rgb: np.ndarray) -> np.ndarray:
-    """
-    Segmenta tecido (1) vs fundo (0) em thumbnail RGB simples.
-
-    Heurística:
-      - converte para HSV
-      - usa canal V + Otsu
-      - remove pequenos objetos
-    """
     if rgb.ndim != 3 or rgb.shape[2] != 3:
         raise ValueError("segment_tissue espera RGB [H,W,3].")
 
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
     v = hsv[:, :, 2]
 
-    # Guard-rail: se thumbnail for quase uniforme, Otsu pode ser instável
     if float(v.std()) < 1.0:
-        # tudo tecido? não — aqui assumimos “quase branco” -> sem tecido
         return np.zeros((rgb.shape[0], rgb.shape[1]), dtype=np.uint8)
 
     thr = threshold_otsu(v)
@@ -51,22 +41,16 @@ def segment_tissue(rgb: np.ndarray) -> np.ndarray:
 
 
 def compute_cellularity_score(patch_rgb: np.ndarray) -> float:
-    """
-    Score simples de celularidade via canal H (hematoxilina) em HED.
 
-    Retorna proporção de "núcleos" estimados no patch.
-    """
     if patch_rgb.ndim != 3 or patch_rgb.shape[2] != 3:
         return 0.0
 
-    # Guard-rail: patch muito branco / sem variação
     if float(patch_rgb.std()) < 2.0:
         return 0.0
 
     hed = rgb2hed(patch_rgb)
     h_channel = hed[:, :, 0].astype(np.float32)
 
-    # Guard-rail: se canal H for quase uniforme, Otsu é ruim
     if float(h_channel.std()) < 1e-3:
         return 0.0
 
@@ -91,9 +75,7 @@ def _tissue_score_from_thumb(
     scale_x: float,
     scale_y: float,
 ) -> float:
-    """
-    Calcula tissue_score aproximado no thumbnail para a ROI do patch.
-    """
+
     tx = int(x / scale_x)
     ty = int(y / scale_y)
     tw = max(1, int(patch_size / scale_x))
@@ -112,6 +94,85 @@ def _tissue_score_from_thumb(
     return float(region.mean())
 
 
+def _compute_spatial_diversity_score(
+    candidate_coords: List[Tuple[int, int]],
+    new_x: int,
+    new_y: int,
+    min_distance: int
+) -> float:
+
+    if not candidate_coords:
+        return 1.0
+    
+    min_dist_found = float('inf')
+    for ex_x, ex_y in candidate_coords:
+        dist = np.sqrt((new_x - ex_x)**2 + (new_y - ex_y)**2)
+        min_dist_found = min(min_dist_found, dist)
+    
+    if min_dist_found >= 2 * min_distance:
+        return 1.0
+    elif min_dist_found < min_distance:
+        return 0.0
+    else:
+        return (min_dist_found - min_distance) / min_distance
+
+
+def _select_diverse_patches(
+    candidates: List[Tuple[float, float, int, int]],
+    num_patches: int,
+    patch_size: int,
+    min_distance_multiplier: float = 2.0
+) -> List[Tuple[float, float, int, int]]:
+
+    if len(candidates) <= num_patches:
+        return candidates
+    
+    candidates_sorted = sorted(candidates, key=lambda t: t[0], reverse=True)
+    
+    min_distance = patch_size * min_distance_multiplier
+    
+    selected = []
+    selected_coords = []
+    
+    best = candidates_sorted[0]
+    selected.append(best)
+    selected_coords.append((best[2], best[3]))  # (x, y)
+    
+    remaining = candidates_sorted[1:]
+    
+    while len(selected) < num_patches and remaining:
+        scored_candidates = []
+        
+        for candidate in remaining:
+            cellularity, tissue_score, x, y = candidate
+            
+            max_cellularity = candidates_sorted[0][0]
+            quality_score = cellularity / max_cellularity if max_cellularity > 0 else 0.0
+            
+            diversity_score = _compute_spatial_diversity_score(
+                selected_coords, x, y, int(min_distance)
+            )
+
+            combined_score = 0.6 * quality_score + 0.4 * diversity_score
+            
+            scored_candidates.append((combined_score, candidate))
+        
+        # Selecionar melhor score combinado
+        if scored_candidates:
+            scored_candidates.sort(key=lambda t: t[0], reverse=True)
+            _, next_patch = scored_candidates[0]
+            
+            selected.append(next_patch)
+            selected_coords.append((next_patch[2], next_patch[3]))
+            
+            # Remover selecionado dos restantes
+            remaining = [c for c in remaining if c != next_patch]
+        else:
+            break
+    
+    return selected
+
+
 def extract_patches_from_wsi(
     slide_path: Path,
     out_dir: Path,
@@ -119,14 +180,13 @@ def extract_patches_from_wsi(
     stride: int = 256,
     tissue_threshold: float = 0.5,
     top_cellularity_quantile: float = 0.8,
-    max_patches: Optional[int] = None,
+    max_patches: Optional[int] = 3,
     patient_id_hint: Optional[str] = None,
     level: int = 0,
     thumbnail_downsample: int = 16,
+    ensure_spatial_diversity: bool = True,
+    min_distance_multiplier: float = 2.0,
 ) -> List[PatchInfo]:
-    """
-    Extrai patches de um WSI e salva como PNG.
-    """
     slide_path = Path(slide_path)
     if not slide_path.exists():
         raise RuntimeError(f"WSI não existe: {slide_path}")
@@ -143,7 +203,6 @@ def extract_patches_from_wsi(
         if w < patch_size or h < patch_size:
             return []
 
-        # thumbnail para segmentação (a partir do level 0 "visual")
         thumb_w = max(1, w // thumbnail_downsample)
         thumb_h = max(1, h // thumbnail_downsample)
 
@@ -153,11 +212,9 @@ def extract_patches_from_wsi(
         scale_x = w / float(thumb.shape[1])
         scale_y = h / float(thumb.shape[0])
 
-        # Guardamos apenas metadados e score para seleção.
-        # candidates: (cellularity, tissue_score, x, y)
+
         candidates: List[Tuple[float, float, int, int]] = []
 
-        # 1o passe: coletar scores
         for y in range(0, h - patch_size + 1, stride):
             for x in range(0, w - patch_size + 1, stride):
                 tissue_score = _tissue_score_from_thumb(
@@ -178,18 +235,34 @@ def extract_patches_from_wsi(
                 candidates.append((cellularity, tissue_score, x, y))
 
         if not candidates:
+            print(f"AVISO: Nenhum patch com tissue suficiente em {slide_id}")
             return []
 
-        # Seleção
-        candidates.sort(key=lambda t: t[0], reverse=True)  # por cellularity desc
+        scores = np.array([c[0] for c in candidates], dtype=np.float32)
+        cutoff = float(np.quantile(scores, float(top_cellularity_quantile)))
+        high_quality_candidates = [c for c in candidates if c[0] >= cutoff]
+        
+        if not high_quality_candidates:
+            high_quality_candidates = candidates
+        
+        print(f"Slide {slide_id}: {len(candidates)} candidatos totais, "
+              f"{len(high_quality_candidates)} de alta qualidade (top {int((1-top_cellularity_quantile)*100)}%)")
 
-        if max_patches is not None and max_patches > 0:
-            selected = candidates[: int(max_patches)]
+        if ensure_spatial_diversity and max_patches and max_patches > 1:
+            selected = _select_diverse_patches(
+                candidates=high_quality_candidates,
+                num_patches=max_patches,
+                patch_size=patch_size,
+                min_distance_multiplier=min_distance_multiplier
+            )
+            print(f"Slide {slide_id}: {len(selected)} patches selecionados com diversidade espacial")
         else:
-            # Quantile cutoff
-            scores = np.array([c[0] for c in candidates], dtype=np.float32)
-            cutoff = float(np.quantile(scores, float(top_cellularity_quantile)))
-            selected = [c for c in candidates if c[0] >= cutoff]
+            high_quality_candidates.sort(key=lambda t: t[0], reverse=True)
+            if max_patches is not None and max_patches > 0:
+                selected = high_quality_candidates[:int(max_patches)]
+            else:
+                selected = high_quality_candidates
+            print(f"Slide {slide_id}: {len(selected)} patches selecionados (sem diversidade)")
 
         if not selected:
             return []
@@ -197,13 +270,12 @@ def extract_patches_from_wsi(
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        # 2o passe: salvar apenas os selecionados
         final_infos: List[PatchInfo] = []
         for i, (cellularity, tissue_score, x, y) in enumerate(selected):
             patch = slide.read_region((x, y), level, (patch_size, patch_size)).convert("RGB")
             patch_np = np.array(patch)
 
-            out_path = out_dir / f"{slide_id}_x{x}_y{y}_{i}.png"
+            out_path = out_dir / f"{slide_id}_patch{i+1}_x{x}_y{y}_cell{int(cellularity*100)}.png"
             ok = cv2.imwrite(str(out_path), cv2.cvtColor(patch_np, cv2.COLOR_RGB2BGR))
             if not ok:
                 raise RuntimeError(f"Falha ao salvar patch: {out_path}")
@@ -220,8 +292,55 @@ def extract_patches_from_wsi(
                     cellularity=float(cellularity),
                 )
             )
+            
+            print(f"  Patch {i+1}/{len(selected)}: "
+                  f"cellularity={cellularity:.3f}, tissue={tissue_score:.3f}, "
+                  f"coords=({x}, {y})")
 
         return final_infos
 
     finally:
         slide.close()
+
+
+def extract_patches_batch(
+    slide_paths: List[Path],
+    out_dir: Path,
+    patches_per_slide: int = 3,
+    **kwargs
+) -> dict:
+    stats = {
+        'total_slides': len(slide_paths),
+        'successful_slides': 0,
+        'total_patches': 0,
+        'cellularities': [],
+        'failed_slides': []
+    }
+    
+    for slide_path in slide_paths:
+        try:
+            patches = extract_patches_from_wsi(
+                slide_path=slide_path,
+                out_dir=out_dir,
+                max_patches=patches_per_slide,
+                ensure_spatial_diversity=True,
+                **kwargs
+            )
+            
+            if patches:
+                stats['successful_slides'] += 1
+                stats['total_patches'] += len(patches)
+                stats['cellularities'].extend([p.cellularity for p in patches])
+            else:
+                stats['failed_slides'].append(str(slide_path))
+                
+        except Exception as e:
+            print(f"ERRO ao processar {slide_path}: {e}")
+            stats['failed_slides'].append(str(slide_path))
+    
+    if stats['cellularities']:
+        stats['avg_cellularity'] = float(np.mean(stats['cellularities']))
+    else:
+        stats['avg_cellularity'] = 0.0
+    
+    return stats
